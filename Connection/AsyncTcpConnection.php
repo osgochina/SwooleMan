@@ -177,6 +177,11 @@ class AsyncTcpConnection    extends ConnectionInterface
 
     public function swOnReceive(\swoole_client $client,$data)
     {
+        if ($this->protocol) {
+            $parser = $this->protocol;
+            $data = $parser::decode($data, $this);
+        }
+
         if ($this->onMessage) {
             try {
                 call_user_func($this->onMessage, $this,$data);

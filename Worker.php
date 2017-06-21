@@ -109,8 +109,6 @@ class Worker{
 
     protected $_autoloadRootPath = '';
 
-    protected $_backlog = 102400;
-
     protected $_socketName;
 
     protected static $_statisticsFile = '';
@@ -128,6 +126,7 @@ class Worker{
     );
 
     public $swServer;
+    protected $_setting = [];
 
 
     public function __construct($socket_name = '', $context_option = array())
@@ -144,7 +143,7 @@ class Worker{
         if ($socket_name) {
             $this->_socketName = $socket_name;
             if (isset($context_option['socket']['backlog'])) {
-                $this->_backlog = $context_option['socket']['backlog'];
+                $this->_setting['backlog'] = $context_option['socket']['backlog'];
             }
         }
         // Set an empty onMessage callback.
@@ -181,6 +180,17 @@ class Worker{
             if(class_exists($scheme)){
                 $this->protocol = $scheme;
             } else {
+                switch ($scheme){
+                    case "text":
+                        $this->_setting['open_eof_check'] = true;
+                        $this->_setting['package_eof'] = "\n";
+                        break;
+                    case "Frame":
+                        $this->_setting['open_length_check'] = true;
+                        $this->_setting['package_length_type'] = "N";
+                        $this->_setting['package_max_length'] = 10485760;
+                        break;
+                }
                 $scheme         = ucfirst($scheme);
                 $this->protocol = '\\Protocols\\' . $scheme;
                 if (!class_exists($this->protocol)) {
@@ -302,6 +312,10 @@ class Worker{
         $this->swServer->start();
     }
 
+    protected function formatSetting()
+    {
+    }
+
     /**
      * 创建swoole server
      */
@@ -310,10 +324,8 @@ class Worker{
         $setting = $this->analyzeProtocol();
         //print_r($setting);
         $this->swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
-        $setting = [
-            "backlog"=>$this->_backlog,
-        ];
-        $this->swServer->set($setting);
+
+        $this->swServer->set($this->_setting);
         $this->swServer->on("WorkerStart",array($this,"swOnWorkerStart"));
         $this->swServer->on("Connect",array($this,"swOnConnect"));
         $this->swServer->on("Receive",array($this,"swOnReceive"));
@@ -383,7 +395,14 @@ class Worker{
         if (!isset($this->connections[$fd])){
             return;
         }
+
         $connection = $this->connections[$fd];
+        if ($connection->protocol) {
+            $parser = $connection->protocol;
+            $data = $parser::decode($data, $connection);
+        }
+        ConnectionInterface::$statistics['total_request']++;
+
         // Try to emit onConnect callback.
         if ($connection->onMessage) {
             try {
@@ -414,9 +433,9 @@ class Worker{
         if ($this->onMessage) {
             if ($this->protocol) {
                 $parser      = $this->protocol;
-                $recv_buffer = $parser::decode($data, $connection);
+                $data = $parser::decode($data, $connection);
                 // Discard bad packets.
-                if ($recv_buffer === false)
+                if ($data === false)
                     return true;
             }
             ConnectionInterface::$statistics['total_request']++;
