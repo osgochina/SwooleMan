@@ -45,6 +45,7 @@ class Timer
             echo new Exception("not callable");
             return false;
         }
+        $time_interval = intval($time_interval*1000);
         if ($persistent){
             $timer_id = swoole_timer_tick($time_interval,function ()use ($func,$args){
                 return call_user_func_array($func,$args);

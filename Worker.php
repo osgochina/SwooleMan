@@ -14,8 +14,12 @@
  */
 namespace SwooleMan;
 
-use SwooleMan\Lib\Timer;
+require_once __DIR__ . '/Lib/Constants.php';
 
+use SwooleMan\Connection\SwTcpConnection;
+use SwooleMan\Connection\SwUdpConnection;
+use SwooleMan\Connection\ConnectionInterface;
+use SwooleMan\Events\SwEvent;
 
 class Worker{
 
@@ -253,19 +257,18 @@ class Worker{
         if ($id === false) {
             return;
         }
-        $pid = pcntl_fork();
-        // For master process.
-        if ($pid > 0) {
-            self::$_pidMap[$worker->workerId][$pid] = $pid;
-            self::$_idMap[$worker->workerId][$id]   = $pid;
-        } // For child processes.
-        elseif (0 === $pid) {
+//        $pid = pcntl_fork();
+//        // For master process.
+//        if ($pid > 0) {
+//            self::$_pidMap[$worker->workerId][$pid] = $pid;
+//            self::$_idMap[$worker->workerId][$id]   = $pid;
+//        } // For child processes.
+//        elseif (0 === $pid) {
             if (self::$_status === self::STATUS_STARTING) {
                 self::resetStd();
             }
             self::$_pidMap  = array();
             self::$_workers = array($worker->workerId => $worker);
-            Timer::delAll();
             self::setProcessTitle('SwooleMan: worker process  ' . $worker->name . ' ' . $worker->getSocketName());
             $worker->setUserAndGroup();
             $worker->id = $id;
@@ -273,9 +276,9 @@ class Worker{
             $err = new \Exception('event-loop exited');
             self::log($err);
             exit(250);
-        } else {
-            throw new \Exception("forkOneWorker fail");
-        }
+//        } else {
+//            throw new \Exception("forkOneWorker fail");
+//        }
     }
 
     public function run()
@@ -288,21 +291,24 @@ class Worker{
 
         // Set autoload root path.
         Autoloader::setRootPath($this->_autoloadRootPath);
-
+        if (!self::$globalEvent) {
+            self::$globalEvent = new SwEvent();
+        }
         if ($this->_socketName) {
 
         }
         $this->newServer();
 
-        // Reinstall signal.
-        self::reinstallSignal();
-
         $this->swServer->start();
     }
 
+    /**
+     * 创建swoole server
+     */
     public function newServer()
     {
         $setting = $this->analyzeProtocol();
+        //print_r($setting);
         $this->swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
         $setting = [
             "backlog"=>$this->_backlog,
@@ -310,13 +316,15 @@ class Worker{
         $this->swServer->set($setting);
         $this->swServer->on("WorkerStart",array($this,"swOnWorkerStart"));
         $this->swServer->on("Connect",array($this,"swOnConnect"));
+        $this->swServer->on("Receive",array($this,"swOnReceive"));
+        $this->swServer->on("Close",array($this,"swOnClose"));
     }
 
-    public function swOnConnect(\swoole_server $server, $fd, $from_id)
-    {
-        echo "swOnConnect";
-
-    }
+    /**
+     * swoole worker 进程启动回调事件
+     * @param \swoole_server $server
+     * @param int $worker_id
+     */
     public function swOnWorkerStart(\swoole_server $server, int $worker_id)
     {
         // Try to emit onWorkerStart callback.
@@ -336,6 +344,115 @@ class Worker{
             }
         }
     }
+
+    /**
+     * 连接回调事件
+     * @param \swoole_server $server
+     * @param $fd
+     * @param $from_id
+     */
+    public function swOnConnect(\swoole_server $server, $fd, $from_id)
+    {
+        $connection                         = new SwTcpConnection($server, $fd, $from_id);
+        $this->connections[$fd] = $connection;
+        $connection->worker                 = $this;
+        $connection->protocol               = $this->protocol;
+        $connection->transport              = $this->transport;
+        $connection->onMessage              = $this->onMessage;
+        $connection->onClose                = $this->onClose;
+        $connection->onError                = $this->onError;
+        $connection->onBufferDrain          = $this->onBufferDrain;
+        $connection->onBufferFull           = $this->onBufferFull;
+
+        // Try to emit onConnect callback.
+        if ($this->onConnect) {
+            try {
+                call_user_func($this->onConnect, $connection);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+    }
+
+    public function swOnReceive(\swoole_server $server, int $fd, int $reactor_id, string $data)
+    {
+        if (!isset($this->connections[$fd])){
+            return;
+        }
+        $connection = $this->connections[$fd];
+        // Try to emit onConnect callback.
+        if ($connection->onMessage) {
+            try {
+                call_user_func($connection->onMessage, $connection,$data);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+
+    }
+
+    /**
+     * 收到udp包
+     * @param \swoole_server $server
+     * @param string $data
+     * @param array $client_info
+     * @return bool
+     */
+    public function swOnPacket(\swoole_server $server, string $data, array $client_info)
+    {
+        // UdpConnection.
+        $connection           = new SwUdpConnection($server, $client_info);
+        $connection->protocol = $this->protocol;
+        if ($this->onMessage) {
+            if ($this->protocol) {
+                $parser      = $this->protocol;
+                $recv_buffer = $parser::decode($data, $connection);
+                // Discard bad packets.
+                if ($recv_buffer === false)
+                    return true;
+            }
+            ConnectionInterface::$statistics['total_request']++;
+            try {
+                call_user_func($this->onMessage, $connection, $data);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+        return true;
+    }
+
+    public function swOnClose(\swoole_server $server, $fd, $reactorId)
+    {
+        if (!isset($this->connections[$fd])){
+            return;
+        }
+        $connection = $this->connections[$fd];
+        // Try to emit onConnect callback.
+        if ($connection->onClose) {
+            try {
+                call_user_func($connection->onClose, $connection);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+    }
+
 
     protected static function checkSapiEnv()
     {
@@ -498,41 +615,6 @@ class Worker{
                 return 'E_USER_DEPRECATED';
         }
         return "";
-    }
-
-    protected static function reinstallSignal()
-    {
-        // uninstall stop signal handler
-        pcntl_signal(SIGINT, SIG_IGN, false);
-        // uninstall reload signal handler
-        pcntl_signal(SIGUSR1, SIG_IGN, false);
-        // uninstall  status signal handler
-        pcntl_signal(SIGUSR2, SIG_IGN, false);
-        // reinstall stop signal handler
-        \swoole_process::signal(SIGINT,  array('\SwooleMan\Worker', 'signalHandler'));
-        // reinstall  reload signal handler
-        \swoole_process::signal(SIGUSR1, array('\SwooleMan\Worker', 'signalHandler'));
-        // reinstall  status signal handler
-        \swoole_process::signal(SIGUSR2, array('\SwooleMan\Worker', 'signalHandler'));
-    }
-
-    public static function signalHandler($signal)
-    {
-        switch ($signal) {
-            // Stop.
-            case SIGINT:
-                self::stopAll();
-                break;
-            // Reload.
-            case SIGUSR1:
-                self::$_pidsToRestart = self::getAllWorkerPids();
-                self::reload();
-                break;
-            // Show status.
-            case SIGUSR2:
-                self::writeStatisticsToStatusFile();
-                break;
-        }
     }
 
     protected static function getAllWorkerPids()

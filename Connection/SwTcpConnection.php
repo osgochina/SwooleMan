@@ -8,6 +8,7 @@
 
 namespace SwooleMan\Connection;
 
+use SwooleMan\Worker;
 
 class SwTcpConnection extends ConnectionInterface
 {
@@ -35,15 +36,51 @@ class SwTcpConnection extends ConnectionInterface
 
     public static $maxPackageSize = 10485760;
 
+    public $swServer;
+
+    public function __construct(\swoole_server $server, $fd, $from_id)
+    {
+        self::$statistics['connection_count']++;
+        $this->id = $fd;
+        $this->maxSendBufferSize = self::$defaultMaxSendBufferSize;
+        $this->swServer = $server;
+    }
+
     /**
      * Sends data on the connection.
      *
      * @param string $send_buffer
-     * @return void|boolean
+     * @param bool $raw
+     * @return boolean
      */
-    public function send($send_buffer)
+    public function send($send_buffer,$raw = false)
     {
-        // TODO: Implement send() method.
+        // Try to call protocol::encode($send_buffer) before sending.
+        if (false === $raw && $this->protocol) {
+            $parser      = $this->protocol;
+            $send_buffer = $parser::encode($send_buffer, $this);
+            if ($send_buffer === '') {
+                return null;
+            }
+        }
+        $len = $this->swServer->send($this->id,$send_buffer);
+        if (!$len){
+            //$code = $this->swServer->getLastError();
+            self::$statistics['send_fail']++;
+            if ($this->onError) {
+                try {
+                    call_user_func($this->onError, $this, SWOOLEMAN_SEND_FAIL, 'client closed');
+                } catch (\Exception $e) {
+                    Worker::log($e);
+                    exit(250);
+                } catch (\Error $e) {
+                    Worker::log($e);
+                    exit(250);
+                }
+            }
+            return false;
+        }
+        return $len;
     }
 
     /**
@@ -53,7 +90,8 @@ class SwTcpConnection extends ConnectionInterface
      */
     public function getRemoteIp()
     {
-        // TODO: Implement getRemoteIp() method.
+        $info = $this->swServer->connection_info($this->id);
+        return $info['remote_ip'];
     }
 
     /**
@@ -63,7 +101,8 @@ class SwTcpConnection extends ConnectionInterface
      */
     public function getRemotePort()
     {
-        // TODO: Implement getRemotePort() method.
+        $info = $this->swServer->connection_info($this->id);
+        return $info['remote_port'];
     }
 
     /**
@@ -74,7 +113,8 @@ class SwTcpConnection extends ConnectionInterface
      */
     public function close($data = null)
     {
-        // TODO: Implement close() method.
+        $this->send($data);
+        $this->swServer->close($this->id);
     }
 
     public function destroy()
@@ -84,16 +124,37 @@ class SwTcpConnection extends ConnectionInterface
 
     public function pauseRecv()
     {
-
+        $this->swServer->pause($this->id);
     }
 
     public function resumeRecv()
     {
-
+        $this->swServer->resume($this->id);
     }
 
-    public function pipe()
+    /**
+     * @param $dest SwTcpConnection
+     */
+    public function pipe($dest)
     {
-
+        $source              = $this;
+        $this->onMessage     = function ($source, $data) use ($dest) {
+            $dest->send($data);
+        };
+        $this->onClose       = function ($source) use ($dest) {
+            $dest->destroy();
+        };
+        $dest->onBufferFull  = function ($dest) use ($source) {
+            $source->pauseRecv();
+        };
+        $dest->onBufferDrain = function ($dest) use ($source) {
+            $source->resumeRecv();
+        };
     }
+
+    public function __destruct()
+    {
+        self::$statistics['connection_count']--;
+    }
+
 }
