@@ -17,6 +17,9 @@ $REAL_MYSQL_ADDRESS = 'tcp://127.0.0.1:3306';
 // 代理监听本地4406端口
 $proxy = new Worker('tcp://0.0.0.0:4406');
 
+$proxy->onWorkerStop = function ($connection){
+    echo "onWorkerStop\n";
+};
 $proxy->onConnect = function($connection)
 {
     global $REAL_MYSQL_ADDRESS;
