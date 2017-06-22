@@ -135,7 +135,8 @@ class Worker
         'tcp'   => 'tcp',
         'udp'   => 'udp',
         'unix'  => 'unix',
-        'ssl'   => 'tcp'
+        'ssl'   => 'tcp',
+        'websocket'   => 'websocket',
     );
 
     public $swServer;
@@ -178,10 +179,20 @@ class Worker
         self::monitorWorkers();
     }
 
-
-    public  function listen()
+    public function run()
     {
+        //Update process state.
+        self::$_status = self::STATUS_RUNNING;
 
+        // Register shutdown function for checking errors.
+        register_shutdown_function(array("\\SwooleMan\\Worker", 'checkErrors'));
+        // Set autoload root path.
+        Autoloader::setRootPath($this->_autoloadRootPath);
+        if (!self::$globalEvent) {
+            self::$globalEvent = new SwEvent();
+        }
+        $this->newServer();
+        $this->swServer->start();
     }
 
     /**
@@ -192,29 +203,26 @@ class Worker
     protected function analyzeProtocol()
     {
         list($scheme, $address) = explode(':', $this->_socketName, 2);
-
         if (!isset(self::$_builtinTransports[$scheme])) {
-            if(class_exists($scheme)){
-                $this->protocol = $scheme;
-            } else {
-                switch ($scheme){
-                    case "text":
-                        $this->_setting['open_eof_check'] = true;
-                        $this->_setting['package_eof'] = "\n";
-                        break;
-                    case "Frame":
-                        $this->_setting['open_length_check'] = true;
-                        $this->_setting['package_length_type'] = "N";
-                        $this->_setting['package_max_length'] = 10485760;
-                        break;
-                }
-                $scheme         = ucfirst($scheme);
-                $this->protocol = '\\Protocols\\' . $scheme;
+            switch ($scheme){
+                case "text":
+                    $this->_setting['open_eof_check'] = true;
+                    $this->_setting['package_eof'] = "\n";
+                    $this->transport = 'tcp';
+                    break;
+                case "Frame":
+                    $this->_setting['open_length_check'] = true;
+                    $this->_setting['package_length_type'] = "N";
+                    $this->_setting['package_max_length'] = 10485760;
+                    $this->transport = 'tcp';
+                    break;
+            }
+            $scheme         = ucfirst($scheme);
+            $this->protocol = '\\Protocols\\' . $scheme;
+            if (!class_exists($this->protocol)) {
+                $this->protocol = "\\SwooleMan\\Protocols\\$scheme";
                 if (!class_exists($this->protocol)) {
-                    $this->protocol = "\\SwooleMan\\Protocols\\$scheme";
-                    if (!class_exists($this->protocol)) {
-                        throw new \Exception("class \\Protocols\\$scheme not exist");
-                    }
+                    throw new \Exception("class \\Protocols\\$scheme not exist");
                 }
             }
             if (!isset(self::$_builtinTransports[$this->transport])) {
@@ -230,7 +238,6 @@ class Worker
                 "flags"=>SWOOLE_UNIX_STREAM
             ];
         }
-
         list($host,$port) = explode(":",$address,2);
         if ($this->transport == 'udp'){
             return [
@@ -265,10 +272,12 @@ class Worker
                     self::$_maxWorkerNameLength = $worker_name_length;
                 }
             }
+//            $worker->count = $worker->count <= 0 ? 1 : $worker->count;
+//            while (count(self::$_pidMap[$worker->workerId]) < $worker->count) {
+//                static::forkOneWorker($worker);
+//            }
             $worker->count = $worker->count <= 0 ? 1 : $worker->count;
-            while (count(self::$_pidMap[$worker->workerId]) < $worker->count) {
-                static::forkOneWorker($worker);
-            }
+            static::forkOneWorker($worker);
         }
     }
 
@@ -291,6 +300,9 @@ class Worker
             self::$_idMap[$worker->workerId][$id]   = $pid;
         } // For child processes.
         elseif (0 === $pid) {
+            if ($worker->reusePort) {
+                //$worker->listen();
+            }
             if (self::$_status === self::STATUS_STARTING) {
                 self::resetStd();
             }
@@ -308,48 +320,28 @@ class Worker
         }
     }
 
-    public function run()
-    {
-        //Update process state.
-        self::$_status = self::STATUS_RUNNING;
-
-        // Register shutdown function for checking errors.
-        register_shutdown_function(array("\\SwooleMan\\Worker", 'checkErrors'));
-
-        // Set autoload root path.
-        Autoloader::setRootPath($this->_autoloadRootPath);
-        if (!self::$globalEvent) {
-            self::$globalEvent = new SwEvent();
-        }
-        if ($this->_socketName) {
-
-        }
-        $this->newServer();
-
-        $this->swServer->start();
-    }
-
-    protected function formatSetting()
-    {
-    }
-
     /**
      * 创建swoole server
      */
     public function newServer()
     {
         $setting = $this->analyzeProtocol();
-        //print_r($setting);
-        $this->swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
-
-        $this->swServer->set($this->_setting);
+        $this->_setting['worker_num'] = $this->count;
+        if ($this->transport == 'websocket'){
+            $this->swServer = new \swoole_websocket_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
+            $this->swServer->set($this->_setting);
+            $this->swServer->on("Message",array($this,"swOnMessage"));
+        }else{
+            $this->swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
+            $this->swServer->set($this->_setting);
+            $this->swServer->on("Receive",array($this,"swOnReceive"));
+        }
         $this->swServer->on("WorkerStart",array($this,"swOnWorkerStart"));
         $this->swServer->on("Connect",array($this,"swOnConnect"));
-        $this->swServer->on("Receive",array($this,"swOnReceive"));
-        $this->swServer->on("Close",array($this,"swOnClose"));
         $this->swServer->on("WorkerStop",array($this,"swOnWorkerStop"));
         $this->swServer->on("BufferFull",array($this,"swOnBufferFull"));
         $this->swServer->on("BufferEmpty",array($this,"swOnBufferEmpty"));
+        $this->swServer->on("Close",array($this,"swOnClose"));
     }
 
 
@@ -373,7 +365,7 @@ class Worker
      * @param \swoole_server $server
      * @param int $worker_id
      */
-    public function swOnWorkerStart(\swoole_server $server, int $worker_id)
+    public function swOnWorkerStart(\swoole_server $server, $worker_id)
     {
         // Try to emit onWorkerStart callback.
         if ($this->onWorkerStart) {
@@ -451,7 +443,27 @@ class Worker
                 exit(250);
             }
         }
-
+    }
+    public function swOnMessage(\swoole_server $server, \swoole_websocket_frame $frame)
+    {
+        $fd = $frame->fd;
+        if (!isset($this->connections[$fd])){
+            return;
+        }
+        $connection = $this->connections[$fd];
+        ConnectionInterface::$statistics['total_request']++;
+        // Try to emit onConnect callback.
+        if ($connection->onMessage) {
+            try {
+                call_user_func($connection->onMessage, $connection,$frame->data);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
     }
 
     /**
@@ -913,11 +925,6 @@ class Worker
             if (self::$_maxUserNameLength < $user_name_length) {
                 self::$_maxUserNameLength = $user_name_length;
             }
-
-            // Listen.
-//            if (!$worker->reusePort) {
-//                $worker->listen();
-//            }
         }
     }
 
@@ -950,7 +957,7 @@ class Worker
     protected static function displayUI()
     {
         self::safeEcho("\033[1A\n\033[K-----------------------\033[47;30m SWOOMEMAN \033[0m-----------------------------\n\033[0m");
-        self::safeEcho('Workerman version:'. Worker::VERSION. "          PHP version:". PHP_VERSION. "\n");
+        self::safeEcho('SwooleMan version:'. Worker::VERSION. "          PHP version:". PHP_VERSION. "\n");
         self::safeEcho("------------------------\033[47;30m WORKERS \033[0m-------------------------------\n");
         self::safeEcho("\033[47;30muser\033[0m". str_pad('',
                 self::$_maxUserNameLength + 2 - strlen('user')). "\033[47;30mworker\033[0m". str_pad('',

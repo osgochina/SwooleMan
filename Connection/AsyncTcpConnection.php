@@ -16,7 +16,7 @@ class AsyncTcpConnection    extends ConnectionInterface
 
     public $protocol = '';
 
-    public $transport = '';
+    public $transport = 'tcp';
     public $onConnect = '';
 
     protected $_remoteAddress;
@@ -158,6 +158,19 @@ class AsyncTcpConnection    extends ConnectionInterface
                 exit(250);
             }
         }
+
+        // Try to emit protocol::onConnect
+        if (method_exists($this->protocol, 'onConnect')) {
+            try {
+                call_user_func(array($this->protocol, 'onConnect'), $this);
+            } catch (\Exception $e) {
+                Worker::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                Worker::log($e);
+                exit(250);
+            }
+        }
     }
 
     public function swOnError(\swoole_client $client)
@@ -238,6 +251,9 @@ class AsyncTcpConnection    extends ConnectionInterface
      */
     public function send($send_buffer,$raw = false)
     {
+        if (!$this->swClient->isConnected()){
+            return false;
+        }
         // Try to call protocol::encode($send_buffer) before sending.
         if (false === $raw && $this->protocol) {
             $parser      = $this->protocol;

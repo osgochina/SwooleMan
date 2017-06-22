@@ -16,6 +16,7 @@ class SwTcpConnection extends ConnectionInterface
     public $id = 0;
 
     public $protocol = '';
+    public $transport = 'tcp';
 
     public $worker = null;
 
@@ -63,7 +64,12 @@ class SwTcpConnection extends ConnectionInterface
                 return null;
             }
         }
-        $len = $this->swServer->send($this->id,$send_buffer);
+
+        if ($this->transport == "websocket"){
+            $len = $this->swServer->push($this->id,$send_buffer);
+        }else{
+            $len = $this->swServer->send($this->id,$send_buffer);
+        }
         if (!$len){
             //$code = $this->swServer->getLastError();
             self::$statistics['send_fail']++;
