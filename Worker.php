@@ -16,7 +16,8 @@ namespace SwooleMan;
 
 require_once __DIR__ . '/Lib/Constants.php';
 
-use SwooleMan\Connection\SwTcpConnection;
+use SwooleMan\Events\EventInterface;
+use SwooleMan\Connection\TcpConnection;
 use SwooleMan\Connection\SwUdpConnection;
 use SwooleMan\Connection\ConnectionInterface;
 use SwooleMan\Events\SwEvent;
@@ -137,9 +138,12 @@ class Worker
         'unix'  => 'unix',
         'ssl'   => 'tcp',
         'websocket'   => 'websocket',
+        'http'=>'http',
     );
 
+
     public $swServer;
+
     protected $_setting = [];
 
 
@@ -192,17 +196,56 @@ class Worker
             self::$globalEvent = new SwEvent();
         }
         $this->newServer();
-        $this->swServer->start();
+        if ($this->swServer){
+            $this->swServer->start();
+        }else{
+            // Try to emit onWorkerStart callback.
+            if ($this->onWorkerStart) {
+                try {
+                    call_user_func($this->onWorkerStart, $this);
+                } catch (\Exception $e) {
+                    self::log($e);
+                    // Avoid rapid infinite loop exit.
+                    sleep(1);
+                    exit(250);
+                } catch (\Error $e) {
+                    self::log($e);
+                    // Avoid rapid infinite loop exit.
+                    sleep(1);
+                    exit(250);
+                }
+            }
+            self::$globalEvent->loop();
+        }
+    }
+    protected static function reinstallSignal()
+    {
+        // uninstall stop signal handler
+        pcntl_signal(SIGINT, SIG_IGN, false);
+        // uninstall reload signal handler
+        pcntl_signal(SIGUSR1, SIG_IGN, false);
+        // uninstall  status signal handler
+        pcntl_signal(SIGUSR2, SIG_IGN, false);
+        // reinstall stop signal handler
+        self::$globalEvent->add(SIGINT, EventInterface::EV_SIGNAL, array('\SwooleMan\Worker', 'signalHandler'));
+        // reinstall  reload signal handler
+        self::$globalEvent->add(SIGUSR1, EventInterface::EV_SIGNAL, array('\SwooleMan\Worker', 'signalHandler'));
+        // reinstall  status signal handler
+        self::$globalEvent->add(SIGUSR2, EventInterface::EV_SIGNAL, array('\SwooleMan\Worker', 'signalHandler'));
     }
 
     /**
      * 解析协议
-     * @return array
+     * @return array|bool
      * @throws \Exception
      */
     protected function analyzeProtocol()
     {
+        if (!$this->_socketName){
+            return false;
+        }
         list($scheme, $address) = explode(':', $this->_socketName, 2);
+        $scheme = strtolower($scheme);
         if (!isset(self::$_builtinTransports[$scheme])) {
             switch ($scheme){
                 case "text":
@@ -210,10 +253,13 @@ class Worker
                     $this->_setting['package_eof'] = "\n";
                     $this->transport = 'tcp';
                     break;
-                case "Frame":
+                case "frame":
                     $this->_setting['open_length_check'] = true;
                     $this->_setting['package_length_type'] = "N";
                     $this->_setting['package_max_length'] = 10485760;
+                    $this->transport = 'tcp';
+                    break;
+                case "http":
                     $this->transport = 'tcp';
                     break;
             }
@@ -326,11 +372,18 @@ class Worker
     public function newServer()
     {
         $setting = $this->analyzeProtocol();
+        if ($setting == false){
+            return;
+        }
         $this->_setting['worker_num'] = $this->count;
         if ($this->transport == 'websocket'){
             $this->swServer = new \swoole_websocket_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
             $this->swServer->set($this->_setting);
             $this->swServer->on("Message",array($this,"swOnMessage"));
+        }elseif ($this->transport == 'http'){
+            $this->swServer = new \swoole_http_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
+            $this->swServer->set($this->_setting);
+            $this->swServer->on("Request",array($this,"swOnRequest"));
         }else{
             $this->swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
             $this->swServer->set($this->_setting);
@@ -393,7 +446,7 @@ class Worker
      */
     public function swOnConnect(\swoole_server $server, $fd, $from_id)
     {
-        $connection                         = new SwTcpConnection($server, $fd, $from_id);
+        $connection                         = new TcpConnection($server, $fd, $from_id);
         $this->connections[$fd] = $connection;
         $connection->worker                 = $this;
         $connection->protocol               = $this->protocol;
@@ -444,6 +497,12 @@ class Worker
             }
         }
     }
+
+    /**
+     *
+     * @param \swoole_server $server
+     * @param \swoole_websocket_frame $frame
+     */
     public function swOnMessage(\swoole_server $server, \swoole_websocket_frame $frame)
     {
         $fd = $frame->fd;
@@ -456,6 +515,28 @@ class Worker
         if ($connection->onMessage) {
             try {
                 call_user_func($connection->onMessage, $connection,$frame->data);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+    }
+
+    /**
+     * http server  请求事件
+     * @param \swoole_http_request $request
+     * @param \swoole_http_response $response
+     */
+    public function swOnRequest(\swoole_http_request $request, \swoole_http_response $response)
+    {
+        ConnectionInterface::$statistics['total_request']++;
+        // Try to emit onConnect callback.
+        if ($this->onMessage) {
+            try {
+                call_user_func($this->onMessage, $request,$response);
             } catch (\Exception $e) {
                 self::log($e);
                 exit(250);
@@ -1154,7 +1235,11 @@ class Worker
         else {
             // Execute exit.
             foreach (self::$_workers as $worker) {
-                $worker->swServer->stop();
+                if ($worker->swServer){
+                    $worker->swServer->stop();
+                }else{
+                    exit;
+                }
             }
         }
     }

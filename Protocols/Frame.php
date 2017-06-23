@@ -13,7 +13,7 @@
  */
 namespace SwooleMan\Protocols;
 
-use SwooleMan\Connection\SwTcpConnection;
+use SwooleMan\Connection\TcpConnection;
 
 /**
  * Frame Protocol.
@@ -24,10 +24,10 @@ class Frame
      * Check the integrity of the package.
      *
      * @param string        $buffer
-     * @param SwTcpConnection $connection
+     * @param TcpConnection $connection
      * @return int
      */
-    public static function input($buffer, SwTcpConnection $connection)
+    public static function input($buffer, TcpConnection $connection)
     {
         if (strlen($buffer) < 4) {
             return 0;

@@ -10,7 +10,7 @@ namespace SwooleMan\Connection;
 
 use SwooleMan\Worker;
 
-class SwTcpConnection extends ConnectionInterface
+class TcpConnection extends ConnectionInterface
 {
 
     public $id = 0;

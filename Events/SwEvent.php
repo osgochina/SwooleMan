@@ -24,9 +24,7 @@ class SwEvent implements EventInterface
     {
         switch ($flag) {
             case self::EV_SIGNAL:
-                return swoole_process::signal($fd, function () use ($func,$args){
-                    return call_user_func_array($func,$args);
-                });
+                return \swoole_process::signal($fd, $func);
             case self::EV_TIMER:
                 return  swoole_timer_tick($fd,function ()use ($func,$args){
                     return call_user_func_array($func,$args);
@@ -59,7 +57,7 @@ class SwEvent implements EventInterface
                 return swoole_event_del($fd_key);
             case  self::EV_SIGNAL:
                 $fd_key = (int)$fd;
-                return swoole_process::signal($fd_key,null);
+                return \swoole_process::signal($fd_key,null);
             case self::EV_TIMER:
             case self::EV_TIMER_ONCE:
                 return swoole_timer_clear($fd);
@@ -84,7 +82,7 @@ class SwEvent implements EventInterface
      */
     public function loop()
     {
-        // TODO: Implement loop() method.
+        swoole_event_wait();
     }
 
     /**

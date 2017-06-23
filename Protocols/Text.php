@@ -13,7 +13,7 @@
  */
 namespace SwooleMan\Protocols;
 
-use SwooleMan\Connection\SwTcpConnection;
+use SwooleMan\Connection\TcpConnection;
 
 /**
  * Text Protocol.
@@ -24,13 +24,13 @@ class Text
      * Check the integrity of the package.
      *
      * @param string        $buffer
-     * @param SwTcpConnection $connection
+     * @param TcpConnection $connection
      * @return int
      */
-    public static function input($buffer, SwTcpConnection $connection)
+    public static function input($buffer, TcpConnection $connection)
     {
         // Judge whether the package length exceeds the limit.
-        if (strlen($buffer) >= SwTcpConnection::$maxPackageSize) {
+        if (strlen($buffer) >= TcpConnection::$maxPackageSize) {
             $connection->close();
             return 0;
         }

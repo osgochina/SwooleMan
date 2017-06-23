@@ -18,6 +18,7 @@ namespace SwooleMan;
  */
 class Autoloader
 {
+    protected static $namespaces;
     /**
      * Autoload root path.
      *
@@ -44,6 +45,9 @@ class Autoloader
      */
     public static function loadByNamespace($name)
     {
+        if (self::autoload($name)){
+            return true;
+        }
         $class_path = str_replace('\\', DIRECTORY_SEPARATOR, $name);
         if (strpos($name, 'SwooleMan\\') === 0) {
             $class_file = __DIR__ . substr($class_path, strlen('SwooleMan')) . '.php';
@@ -63,6 +67,30 @@ class Autoloader
             }
         }
         return false;
+    }
+    /**
+     * 自动载入类
+     * @param $class
+     */
+    protected static function autoload($class)
+    {
+        $root = explode('\\', trim($class, '\\'), 2);
+        if (count($root) > 1 and isset(self::$namespaces[$root[0]]))
+        {
+            include self::$namespaces[$root[0]].'/'.str_replace('\\', '/', $root[1]).'.php';
+            return true;
+        }
+        return false;
+    }
+
+    /**
+     * 设置根命名空间
+     * @param $root
+     * @param $path
+     */
+    static function addNameSpace($root, $path)
+    {
+        self::$namespaces[$root] = $path;
     }
 }
 
