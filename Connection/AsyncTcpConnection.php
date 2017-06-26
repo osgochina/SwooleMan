@@ -8,17 +8,54 @@
 
 namespace SwooleMan\Connection;
 
+use Swoole\Exception;
 use SwooleMan\Lib\Timer;
 use SwooleMan\Worker;
 
 class AsyncTcpConnection    extends ConnectionInterface
 {
+    /**
+     * Status initial.
+     *
+     * @var int
+     */
+    const STATUS_INITIAL = 0;
+
+    /**
+     * Status connecting.
+     *
+     * @var int
+     */
+    const STATUS_CONNECTING = 1;
+
+    /**
+     * Status connection established.
+     *
+     * @var int
+     */
+    const STATUS_ESTABLISH = 2;
+
+    /**
+     * Status closing.
+     *
+     * @var int
+     */
+    const STATUS_CLOSING = 4;
+
+    /**
+     * Status closed.
+     *
+     * @var int
+     */
+    const STATUS_CLOSED = 8;
 
     public $protocol = '';
 
     public $transport = 'tcp';
     public $onConnect = '';
+    protected $_status = self::STATUS_INITIAL;
 
+    protected $_connectStartTime = 0;
     protected $_remoteAddress;
     protected $_remoteHost;
     protected $_remotePort;
@@ -43,6 +80,11 @@ class AsyncTcpConnection    extends ConnectionInterface
      */
     protected $swClient;
     protected $setting = [];
+
+    /**
+     * @var \SplQueue
+     */
+    protected $_tmp_data;
 
     public function __construct(string $remote_address, $context_option = null)
     {
@@ -89,6 +131,7 @@ class AsyncTcpConnection    extends ConnectionInterface
         // For statistics.
         self::$statistics['connection_count']++;
         $this->newSwClient();
+        $this->_tmp_data = new \SplQueue();
     }
 
     protected function formatSetting($context_option)
@@ -142,6 +185,7 @@ class AsyncTcpConnection    extends ConnectionInterface
         $this->swClient->on("Error",array($this,'swOnError'));
         $this->swClient->on("Receive",array($this,'swOnReceive'));
         $this->swClient->on("Close",array($this,'swOnClose'));
+        $this->swClient->on("Close",array($this,'swOnClose'));
     }
 
 
@@ -158,7 +202,6 @@ class AsyncTcpConnection    extends ConnectionInterface
                 exit(250);
             }
         }
-
         // Try to emit protocol::onConnect
         if (method_exists($this->protocol, 'onConnect')) {
             try {
@@ -171,13 +214,27 @@ class AsyncTcpConnection    extends ConnectionInterface
                 exit(250);
             }
         }
+        if (!$this->_tmp_data->isEmpty()){
+            while (!$this->_tmp_data->isEmpty()){
+                $data = $this->_tmp_data->pop();
+                $this->send($data['data'],$data['raw']);
+            }
+        }
     }
 
     public function swOnError(\swoole_client $client)
     {
+        $code = $client->errCode;
+        $msg = socket_strerror($client->errCode);
+        if ($client->errCode == 61){
+            $code = SWOOLEMAN_CONNECT_FAIL;
+            $msg = 'connect ' . $this->_remoteAddress . ' fail after ' . round(microtime(true) -
+                    $this->_connectStartTime, 4) . ' seconds';
+            $this->_status = self::STATUS_CLOSING;
+        }
         if ($this->onError) {
             try {
-                call_user_func($this->onError, $this);
+                call_user_func($this->onError, $this, $code, $msg);
             } catch (\Exception $e) {
                 Worker::log($e);
                 exit(250);
@@ -185,6 +242,12 @@ class AsyncTcpConnection    extends ConnectionInterface
                 Worker::log($e);
                 exit(250);
             }
+        }
+        if ($this->_status === self::STATUS_CLOSING) {
+            $this->destroy();
+        }
+        if ($this->_status === self::STATUS_CLOSED) {
+            $this->onConnect = null;
         }
     }
 
@@ -194,7 +257,6 @@ class AsyncTcpConnection    extends ConnectionInterface
             $parser = $this->protocol;
             $data = $parser::decode($data, $this);
         }
-
         if ($this->onMessage) {
             try {
                 call_user_func($this->onMessage, $this,$data);
@@ -228,6 +290,7 @@ class AsyncTcpConnection    extends ConnectionInterface
         if ($this->swClient->isConnected()){
             return true;
         }
+        $this->_connectStartTime = microtime(true);
         return $this->swClient->connect($this->_remoteHost,$this->_remotePort);
     }
 
@@ -252,6 +315,7 @@ class AsyncTcpConnection    extends ConnectionInterface
     public function send($send_buffer,$raw = false)
     {
         if (!$this->swClient->isConnected()){
+            $this->_tmp_data->push(["data"=>$send_buffer,'raw'=>$raw]);
             return false;
         }
         // Try to call protocol::encode($send_buffer) before sending.
@@ -316,6 +380,48 @@ class AsyncTcpConnection    extends ConnectionInterface
     public function close($data = null)
     {
         $this->swClient->close();
+    }
+
+    /**
+     * Destroy connection.
+     *
+     * @return void
+     */
+    public function destroy()
+    {
+        // Avoid repeated calls.
+        if ($this->_status === self::STATUS_CLOSED) {
+            return;
+        }
+        $this->_status = self::STATUS_CLOSED;
+        // Try to emit onClose callback.
+        if ($this->onClose) {
+            try {
+                call_user_func($this->onClose, $this);
+            } catch (\Exception $e) {
+                Worker::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                Worker::log($e);
+                exit(250);
+            }
+        }
+        // Try to emit protocol::onClose
+        if (method_exists($this->protocol, 'onClose')) {
+            try {
+                call_user_func(array($this->protocol, 'onClose'), $this);
+            } catch (\Exception $e) {
+                Worker::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                Worker::log($e);
+                exit(250);
+            }
+        }
+        if ($this->_status === self::STATUS_CLOSED) {
+            // Cleaning up the callback to avoid memory leaks.
+            $this->onMessage = $this->onClose = $this->onError = $this->onBufferFull = $this->onBufferDrain = null;
+        }
     }
 
     public function __destruct()

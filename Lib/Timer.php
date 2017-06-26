@@ -26,6 +26,7 @@ class Timer
     protected  static $_timer_id = array();
 
 
+    public static function init(){}
     /**
      * Add a timer.
      *
@@ -48,10 +49,16 @@ class Timer
         $time_interval = intval($time_interval*1000);
         if ($persistent){
             $timer_id = swoole_timer_tick($time_interval,function ()use ($func,$args){
+                if ($args == null){
+                    return call_user_func($func);
+                }
                 return call_user_func_array($func,$args);
             });
         }else{
             $timer_id = swoole_timer_after($time_interval,function ()use ($func,$args){
+                if ($args == null){
+                    return call_user_func($func);
+                }
                 return call_user_func_array($func,$args);
             });
         }
