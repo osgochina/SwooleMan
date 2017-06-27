@@ -64,7 +64,6 @@ class SwTcpConnection extends ConnectionInterface
                 return null;
             }
         }
-
         if ($this->transport == "websocket"){
             $len = $this->swServer->push($this->id,$send_buffer);
         }else{

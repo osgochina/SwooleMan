@@ -72,7 +72,8 @@ class AsyncTcpConnection    extends ConnectionInterface
         'ssl'   => 'ssl',
         'sslv2' => 'sslv2',
         'sslv3' => 'sslv3',
-        'tls'   => 'tls'
+        'tls'   => 'tls',
+        'ws'   => 'ws',
     );
 
     /**
@@ -155,9 +156,16 @@ class AsyncTcpConnection    extends ConnectionInterface
 
     protected function newSwClient()
     {
+
         switch ($this->transport){
             case 'tcp':
                 $this->swClient = new \swoole_client(SWOOLE_SOCK_TCP , SWOOLE_SOCK_ASYNC);
+                $this->swClient->on("Receive",array($this,'swOnReceive'));
+                $this->swClient->on("Connect",array($this,'swOnConnect'));
+                break;
+            case 'ws':
+                $this->swClient = new \swoole_http_client($this->getRemoteIp(),$this->getRemotePort());
+                $this->swClient->on("Message",array($this,'swOnMessage'));
                 break;
 //            case "ssl":
 //                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP , SWOOLE_ASYNC | SWOOLE_SSL);
@@ -181,15 +189,12 @@ class AsyncTcpConnection    extends ConnectionInterface
         if (!empty($this->setting)){
             $this->swClient->set($this->setting);
         }
-        $this->swClient->on("Connect",array($this,'swOnConnect'));
         $this->swClient->on("Error",array($this,'swOnError'));
-        $this->swClient->on("Receive",array($this,'swOnReceive'));
-        $this->swClient->on("Close",array($this,'swOnClose'));
         $this->swClient->on("Close",array($this,'swOnClose'));
     }
 
 
-    public function swOnConnect(\swoole_client $client)
+    public function swOnConnect($client)
     {
         if ($this->onConnect) {
             try {
@@ -222,7 +227,7 @@ class AsyncTcpConnection    extends ConnectionInterface
         }
     }
 
-    public function swOnError(\swoole_client $client)
+    public function swOnError( $client)
     {
         $code = $client->errCode;
         $msg = socket_strerror($client->errCode);
@@ -270,6 +275,21 @@ class AsyncTcpConnection    extends ConnectionInterface
         }
     }
 
+    public function swOnMessage($client,$frame)
+    {
+        if ($this->onMessage) {
+            try {
+                call_user_func($this->onMessage, $this,$frame->data);
+            } catch (\Exception $e) {
+                Worker::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                Worker::log($e);
+                exit(250);
+            }
+        }
+    }
+
     public function swOnClose(\swoole_client $client)
     {
         if ($this->onClose) {
@@ -287,6 +307,11 @@ class AsyncTcpConnection    extends ConnectionInterface
 
     public function connect()
     {
+        //websocket协议
+        if ($this->transport == "ws"){
+            return $this->swClient->upgrade('/', array($this,'swOnConnect'));
+        }
+
         if ($this->swClient->isConnected()){
             return true;
         }
@@ -326,7 +351,11 @@ class AsyncTcpConnection    extends ConnectionInterface
                 return null;
             }
         }
-        $len = $this->swClient->send($send_buffer);
+        if ($this->transport == 'ws'){
+            $len = $this->swClient->push($send_buffer);
+        }else{
+            $len = $this->swClient->send($send_buffer);
+        }
         if (!$len){
             //$code = $this->swServer->getLastError();
             self::$statistics['send_fail']++;
@@ -352,6 +381,11 @@ class AsyncTcpConnection    extends ConnectionInterface
      * @return string
      */
     public function getRemoteIp()
+    {
+        return $this->_remoteHost;
+    }
+
+    public function getRemoteHost()
     {
         return $this->_remoteHost;
     }

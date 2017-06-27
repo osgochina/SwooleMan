@@ -186,17 +186,19 @@ class Worker extends Base
             $this->_swServer = new \swoole_websocket_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
             $this->_swServer->set($this->_setting);
             $this->_swServer->on("Message",array($this,"swOnMessage"));
+            $this->_swServer->on("Open",array($this,"swOnOpen"));
         }elseif ($this->transport == 'http'){
             $this->_swServer = new \swoole_http_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
             $this->_swServer->set($this->_setting);
             $this->_swServer->on("Request",array($this,"swOnRequest"));
+            $this->_swServer->on("Connect",array($this,"swOnConnect"));
         }else{
             $this->_swServer = new \swoole_server($setting['host'],$setting['port'],SWOOLE_BASE,$setting['flags']);
             $this->_swServer->set($this->_setting);
             $this->_swServer->on("Receive",array($this,"swOnReceive"));
+            $this->_swServer->on("Connect",array($this,"swOnConnect"));
         }
         $this->_swServer->on("WorkerStart",array($this,"swOnWorkerStart"));
-        $this->_swServer->on("Connect",array($this,"swOnConnect"));
         $this->_swServer->on("WorkerStop",array($this,"swOnWorkerStop"));
         $this->_swServer->on("BufferFull",array($this,"swOnBufferFull"));
         $this->_swServer->on("BufferEmpty",array($this,"swOnBufferEmpty"));
@@ -272,6 +274,38 @@ class Worker extends Base
         $connection->onBufferDrain          = $this->onBufferDrain;
         $connection->onBufferFull           = $this->onBufferFull;
 
+        // Try to emit onConnect callback.
+        if ($this->onConnect) {
+            try {
+                call_user_func($this->onConnect, $connection);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+    }
+
+    /**
+     * websocket 连接完成
+     * @param \swoole_websocket_server $server
+     * @param \swoole_http_request $req
+     */
+    public function swOnOpen(\swoole_websocket_server $server, \swoole_http_request $req)
+    {
+        $fd = $req->fd;
+        $connection                         = new SwTcpConnection($server, $fd, 0);
+        $this->connections[$fd] = $connection;
+        $connection->worker                 = $this;
+        $connection->protocol               = $this->protocol;
+        $connection->transport              = $this->transport;
+        $connection->onMessage              = $this->onMessage;
+        $connection->onClose                = $this->onClose;
+        $connection->onError                = $this->onError;
+        $connection->onBufferDrain          = $this->onBufferDrain;
+        $connection->onBufferFull           = $this->onBufferFull;
         // Try to emit onConnect callback.
         if ($this->onConnect) {
             try {
