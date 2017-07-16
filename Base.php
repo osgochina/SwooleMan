@@ -1066,18 +1066,17 @@ class Base
                         // Mark id is available.
                         $id                            = self::getId($worker_id, $pid);
                         self::$_idMap[$worker_id][$id] = 0;
-
                         break;
                     }
                 }
                 // Is still running state then fork a new worker process.
                 if (self::$_status !== self::STATUS_SHUTDOWN) {
-                    self::forkWorkers();
-                    // If reloading continue.
-                    if (isset(self::$_pidsToRestart[$pid])) {
-                        unset(self::$_pidsToRestart[$pid]);
-                        self::reload();
-                    }
+//                    self::forkWorkers();
+//                    // If reloading continue.
+//                    if (isset(self::$_pidsToRestart[$pid])) {
+//                        unset(self::$_pidsToRestart[$pid]);
+//                        self::reload();
+//                    }
                 } else {
                     // If shutdown state and all child processes exited then master process exit.
                     if (!self::getAllWorkerPids()) {
@@ -1174,7 +1173,7 @@ class Base
             // Send reload signal to a worker process.
             posix_kill($one_worker_pid, SIGUSR1);
             // If the process does not exit after self::KILL_WORKER_TIMER_TIME seconds try to kill it.
-            Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($one_worker_pid, SIGKILL), false);
+            //Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($one_worker_pid, SIGKILL), false);
         } // For child processes.
         else {
             $worker = current(self::$_workers);
@@ -1189,10 +1188,6 @@ class Base
                     self::log($e);
                     exit(250);
                 }
-            }
-
-            if ($worker->reloadable) {
-                self::stopAll();
             }
         }
     }
@@ -1211,8 +1206,8 @@ class Base
             $worker_pid_array = self::getAllWorkerPids();
             // Send stop signal to all child processes.
             foreach ($worker_pid_array as $worker_pid) {
-                posix_kill($worker_pid, SIGINT);
-                Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($worker_pid, SIGKILL), false);
+                posix_kill($worker_pid, SIGTERM);
+                //Timer::add(self::KILL_WORKER_TIMER_TIME, 'posix_kill', array($worker_pid, SIGKILL), false);
             }
             // Remove statistics file.
             if (is_file(self::$_statisticsFile)) {
