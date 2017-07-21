@@ -23,6 +23,8 @@ class TcpConnection extends ConnectionInterface
      */
     public $protocol;
 
+    public $transport;
+
     /**
      * 此属性为只读属性，即当前connection对象所属的worker实例
      * @var \SwooleMan\Worker

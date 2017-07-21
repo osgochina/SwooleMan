@@ -11,6 +11,7 @@ namespace SwooleMan;
 use Swoole;
 use SwooleMan\Connection\ConnectionInterface;
 use SwooleMan\Connection\TcpConnection;
+use SwooleMan\Connection\UdpConnection;
 
 class Worker
 {
@@ -201,7 +202,7 @@ class Worker
     /**
      * @var \Swoole\Server;
      */
-    protected  $swServer;
+    protected  static $_swServer;
     /**
      * worker 的实例
      * @var Worker;
@@ -231,6 +232,16 @@ class Worker
     protected static $_statisticsFile = '';
 
     /**
+     * Status info of current worker process.
+     *
+     * @var array
+     */
+    protected static $_globalStatistics = array(
+        'start_timestamp'  => 0,
+        'worker_exit_info' => array()
+    );
+
+    /**
      * Maximum length of the worker names.
      *
      * @var int
@@ -256,15 +267,17 @@ class Worker
     public function __construct($listen,$context = '')
     {
         $this->_socketName = $listen;
+        $this->_context = $context;
         $this->_init();
         $this->_paramSocketName($this->_socketName);
         $this->_createSetting();
-        if (self::$_instance){
-            throw new \Exception("worker 对象已存在");
-        }
-        self::$_instance = $this;
+        $this->_newService();
+
     }
 
+    /**
+     * 开始运行
+     */
     public static function runAll()
     {
         self::_checkSapiEnv();
@@ -272,10 +285,13 @@ class Worker
         self::_run();
     }
 
+    /**
+     * 关闭所有进程
+     */
     public static function stopAll()
     {
         // For master process.
-        $master_pid = self::$_instance->swServer->master_pid;
+        $master_pid = self::$_swServer->master_pid;
         if ( $master_pid === posix_getpid()) {
             self::log("SwooleMan[" . basename(self::$_startFile) . "] Stopping ...");
             posix_kill($master_pid, SIGTERM);
@@ -285,14 +301,27 @@ class Worker
             }
         } // For child processes.
         else {
-            self::$_instance->swServer->stop();
+            self::$_swServer->stop();
             // Execute exit.
         }
     }
 
-    public static function listen()
+    /**
+     * 监听
+     */
+    public  function listen()
     {
-
+        switch (strtolower($this->transport)){
+            case "udp":
+                $flag = SWOOLE_SOCK_UDP;
+                break;
+            case "unix":
+                $flag = SWOOLE_UNIX_DGRAM;
+                break;
+            default:
+                $flag = SWOOLE_SOCK_TCP;
+        }
+        self::$_swServer->listen($this->_host,$this->_port,$flag);
     }
 
 
@@ -370,13 +399,21 @@ class Worker
         //守护进程运行
         $this->_setting['daemonize'] = self::$daemonize;
 
-        self::$_statisticsFile                      = sys_get_temp_dir() . '/swooleman.status';
     }
 
+    /**
+     * 服务启动
+     * @param $server
+     */
     public function _onStart($server)
     {
         $this->displayUI($server);
     }
+
+    /**
+     * 服务关闭
+     * @param $server
+     */
     public function _onShutdown($server)
     {
 
@@ -407,6 +444,11 @@ class Worker
         }
     }
 
+    /**
+     * worker进程关闭
+     * @param $server
+     * @param $worker_id
+     */
     public function _onWorkerStop($server,$worker_id)
     {
         if ($this->onWorkerStop) {
@@ -422,9 +464,14 @@ class Worker
         }
     }
 
+    /**
+     * 客户端连接成功
+     * @param $server
+     * @param $fd
+     * @param $from_id
+     */
     public function _onConnect($server,$fd,$from_id)
     {
-        var_dump("_onConnect");
         $connection                         = new TcpConnection($server, $fd);
         $this->connections[$fd] = $connection;
         $connection->worker                 = $this;
@@ -448,6 +495,14 @@ class Worker
             }
         }
     }
+
+    /**
+     * 收到客户端发送过来的消息
+     * @param $server
+     * @param $fd
+     * @param $from_id
+     * @param $data
+     */
     public function _onReceive($server,$fd,$from_id,$data)
     {
         if (!isset($this->connections[$fd])){
@@ -474,10 +529,47 @@ class Worker
             }
         }
     }
+
+    /**
+     * 收到udp包
+     * @param $server
+     * @param $data
+     * @param $client_info
+     * @return bool
+     */
     public function _onPacket($server,$data, $client_info)
     {
-
+        // UdpConnection.
+        $connection           = new UdpConnection($server, $client_info);
+        $connection->protocol = $this->protocol;
+        if ($this->onMessage) {
+            if ($this->protocol) {
+                $parser      = $this->protocol;
+                $data = $parser::decode($data, $connection);
+                // Discard bad packets.
+                if ($data === false)
+                    return true;
+            }
+            ConnectionInterface::$statistics['total_request']++;
+            try {
+                call_user_func($this->onMessage, $connection, $data);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
+        return true;
     }
+
+    /**
+     * 连接关闭
+     * @param $server
+     * @param $fd
+     * @param $from_id
+     */
     public function _onClose($server,$fd,$from_id)
     {
         if (!isset($this->connections[$fd])){
@@ -497,6 +589,12 @@ class Worker
             }
         }
     }
+
+    /**
+     * 发送缓冲区已满
+     * @param $server
+     * @param $fd
+     */
     public function _onBufferFull($server,$fd)
     {
         if (!isset($this->connections[$fd])){
@@ -516,6 +614,12 @@ class Worker
             }
         }
     }
+
+    /**
+     * 发送缓冲区已经清空
+     * @param $server
+     * @param $fd
+     */
     public function _onBufferEmpty($server,$fd)
     {
         if (!isset($this->connections[$fd])){
@@ -535,16 +639,47 @@ class Worker
             }
         }
     }
+
+    /**
+     * 收到错误
+     * @param $server
+     * @param $worker_id
+     * @param $worker_pid
+     * @param $exit_code
+     * @param $signal
+     */
     public function _onWorkerError($server,$worker_id, $worker_pid, $exit_code, $signal)
     {
 
     }
 
+    /**
+     * http事件,收到请求
+     * @param $request
+     * @param $response
+     */
     public function _onRequest($request,$response)
     {
-
+        ConnectionInterface::$statistics['total_request']++;
+        // Try to emit onConnect callback.
+        if ($this->onMessage) {
+            try {
+                call_user_func($this->onMessage, $request,$response);
+            } catch (\Exception $e) {
+                self::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                self::log($e);
+                exit(250);
+            }
+        }
     }
 
+    /**
+     * websocket事件 客户端与服务器建立连接并完成握手
+     * @param $server
+     * @param $req
+     */
     public function _onOpen($server, $req)
     {
         $fd = $req->fd;
@@ -572,6 +707,11 @@ class Worker
         }
     }
 
+    /**
+     * websocket事件 当服务器收到来自客户端的数据帧时会回调此函数
+     * @param $server
+     * @param $frame
+     */
     public function _onMessage($server,$frame)
     {
         $fd = $frame->fd;
@@ -711,19 +851,19 @@ class Worker
     {
         switch (strtolower($this->transport)){
             case "tcp":
-                $this->swServer = $this->_newTcpServer();
+                self::$_swServer = $this->_newTcpServer();
                 break;
             case "udp":
-                $this->swServer = $this->_newUdpServer();
+                self::$_swServer = $this->_newUdpServer();
                 break;
             case "unix":
-                $this->swServer = $this->_newUnixServer();
+                self::$_swServer = $this->_newUnixServer();
                 break;
             case "http":
-                $this->swServer = $this->_newHttpServer();
+                self::$_swServer = $this->_newHttpServer();
                 break;
             case "websocket":
-                $this->swServer = $this->_newWebSocketServer();
+                self::$_swServer = $this->_newWebSocketServer();
                 break;
         }
     }
@@ -755,6 +895,9 @@ class Worker
         file_put_contents((string)self::$logFile, date('Y-m-d H:i:s') . ' ' . 'pid:'. posix_getpid() . ' ' . $msg, FILE_APPEND | LOCK_EX);
     }
 
+    /**
+     *  检查环境
+     */
     protected static function _checkSapiEnv()
     {
         // Only for cli.
@@ -763,6 +906,9 @@ class Worker
         }
     }
 
+    /**
+     * 初始化必要的参数
+     */
     protected  function _init()
     {
         // Worker name.
@@ -793,8 +939,15 @@ class Worker
         if (self::$_maxUserNameLength < $user_name_length) {
             self::$_maxUserNameLength = $user_name_length;
         }
+
+        // For statistics.
+        self::$_globalStatistics['start_timestamp'] = time();
+        self::$_statisticsFile                      = sys_get_temp_dir() . '/swooleman.status';
     }
 
+    /**
+     * 解析命令
+     */
     protected static function _parseCommand()
     {
 
@@ -893,13 +1046,19 @@ class Worker
     }
 
 
-
+    /**
+     * 开始启动服务
+     */
     protected static function _run()
     {
-        self::$_instance->_newService();
-        self::$_instance->swServer->start();
+        self::$_swServer->start();
     }
 
+
+    /**
+     * 获取当前进程的所有者
+     * @return mixed
+     */
     protected static function getCurrentUser()
     {
         $user_info = posix_getpwuid(posix_getuid());

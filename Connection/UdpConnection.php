@@ -20,7 +20,7 @@ class UdpConnection extends ConnectionInterface
 {
     /**
      * Application layer protocol.
-     * The format is like this Workerman\\Protocols\\Http.
+     * The format is like this SwooleMan\\Protocols\\Http.
      *
      * @var \SwooleMan\Protocols\ProtocolInterface
      */
@@ -36,20 +36,21 @@ class UdpConnection extends ConnectionInterface
     /**
      * Remote address.
      *
-     * @var string
+     * @var array
      */
-    protected $_remoteAddress = '';
+    protected $_remoteAddress = [];
+
+    public $swServer;
 
     /**
-     * Construct.
-     *
-     * @param resource $socket
-     * @param string   $remote_address
+     * SwUdpConnection constructor.
+     * @param \swoole_server $server
+     * @param $client_info
      */
-    public function __construct($socket, $remote_address)
+    public function __construct(\swoole_server $server, $client_info)
     {
-        $this->_socket        = $socket;
-        $this->_remoteAddress = $remote_address;
+        $this->swServer        = $server;
+        $this->_remoteAddress = $client_info;
     }
 
     /**
@@ -57,7 +58,7 @@ class UdpConnection extends ConnectionInterface
      *
      * @param string $send_buffer
      * @param bool   $raw
-     * @return void|boolean
+     * @return boolean
      */
     public function send($send_buffer, $raw = false)
     {
@@ -68,7 +69,7 @@ class UdpConnection extends ConnectionInterface
                 return null;
             }
         }
-        return strlen($send_buffer) === stream_socket_sendto($this->_socket, $send_buffer, 0, $this->_remoteAddress);
+        return $this->swServer->sendto($this->getRemoteIp(),$this->getRemotePort(),$send_buffer);
     }
 
     /**
@@ -78,11 +79,7 @@ class UdpConnection extends ConnectionInterface
      */
     public function getRemoteIp()
     {
-        $pos = strrpos($this->_remoteAddress, ':');
-        if ($pos) {
-            return trim(substr($this->_remoteAddress, 0, $pos), '[]');
-        }
-        return '';
+        return $this->_remoteAddress["address"];
     }
 
     /**
@@ -92,10 +89,7 @@ class UdpConnection extends ConnectionInterface
      */
     public function getRemotePort()
     {
-        if ($this->_remoteAddress) {
-            return (int)substr(strrchr($this->_remoteAddress, ':'), 1);
-        }
-        return 0;
+        return $this->_remoteAddress["port"];
     }
 
     /**

@@ -62,22 +62,13 @@ class WebServer extends Worker
     public function __construct($socket_name, $context_option = array())
     {
         list(, $address) = explode(':', $socket_name, 2);
+        $this->_onWorkerStart = $this->onWorkerStart;
+        $this->onWorkerStart  = array($this, 'onWorkerStart');
+        $this->onMessage      = array($this, 'onMessage');
         parent::__construct('http:' . $address, $context_option);
         $this->name = 'WebServer';
     }
 
-    /**
-     * Run webserver instance.
-     *
-     * @see Workerman.Worker::run()
-     */
-    public function run()
-    {
-        $this->_onWorkerStart = $this->onWorkerStart;
-        $this->onWorkerStart  = array($this, 'onWorkerStart');
-        $this->onMessage      = array($this, 'onMessage');
-        parent::run();
-    }
 
     /**
      * Emit when process start.
@@ -141,7 +132,6 @@ class WebServer extends Worker
                 $workerman_file_extension = 'html';
             }
         }
-
         // File exsits.
         if (is_file($workerman_file)) {
             // Security check.

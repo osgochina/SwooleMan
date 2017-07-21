@@ -1,0 +1,20 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+    <meta charset="UTF-8">
+    <title>Title</title>
+    <script type="text/javascript">
+        var ws = new WebSocket('ws://127.0.0.1:1234');
+        ws.onopen = function(){
+            var uid = 'uid1';
+            ws.send(uid);
+        };
+        ws.onmessage = function(e){
+            alert(e.data);
+        };
+    </script>
+</head>
+<body>
+
+</body>
+</html>

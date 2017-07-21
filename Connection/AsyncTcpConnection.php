@@ -2,68 +2,48 @@
 /**
  * Created by PhpStorm.
  * User: liuzhiming
- * Date: 2017/6/21
- * Time: 15:06
+ * Date: 2017/7/15
+ * Time: 22:59
  */
 
 namespace SwooleMan\Connection;
-
-use Swoole\Exception;
-use SwooleMan\Lib\Timer;
 use SwooleMan\Worker;
+use SwooleMan\Lib\Timer;
 
-class AsyncTcpConnection    extends ConnectionInterface
+class AsyncTcpConnection extends ConnectionInterface
 {
     /**
-     * Status initial.
-     *
+     * 连接的id。这是一个自增的整数。
      * @var int
      */
-    const STATUS_INITIAL = 0;
+    public $id;
 
     /**
-     * Status connecting.
-     *
-     * @var int
+     * 当前连接的协议类
+     * @var string
      */
-    const STATUS_CONNECTING = 1;
+    public $protocol;
 
     /**
-     * Status connection established.
-     *
-     * @var int
+     * 此属性为只读属性，即当前connection对象所属的worker实例
+     * @var \SwooleMan\Worker
      */
-    const STATUS_ESTABLISH = 2;
+    public $worker = null;
+
 
     /**
-     * Status closing.
+     * 作用与Worker::$onBufferFull回调相同
      *
-     * @var int
+     * @var callback
      */
-    const STATUS_CLOSING = 4;
+    public $onBufferFull = null;
 
     /**
-     * Status closed.
+     * 作用与Worker::$onBufferDrain回调相同
      *
-     * @var int
+     * @var callback
      */
-    const STATUS_CLOSED = 8;
-
-    public $protocol = '';
-
-    public $transport = 'tcp';
-    public $onConnect = '';
-    protected $_status = self::STATUS_INITIAL;
-
-    protected $_connectStartTime = 0;
-    protected $_remoteAddress;
-    protected $_remoteHost;
-    protected $_remotePort;
-    protected $_remoteURI;
-    protected $_reconnectTimer;
-
-
-    protected static $_idRecorder = 1;
+    public $onBufferDrain = null;
 
     protected static $_builtinTransports = array(
         'tcp'   => 'tcp',
@@ -73,144 +53,109 @@ class AsyncTcpConnection    extends ConnectionInterface
         'sslv2' => 'sslv2',
         'sslv3' => 'sslv3',
         'tls'   => 'tls',
-        'ws'   => 'ws',
+        'ws'    => 'ws',
     );
 
+    protected $_socketName = "";
     /**
-     * @var \Swoole\Client
+     * 套接字上下文选项
+     * @var array
      */
+    protected $_context = [];
+
+    /**
+     * 配置信息
+     * @var array
+     */
+    protected $_setting = [];
+    public $transport = 'tcp';
+    /**
+     * worker 监听的ip
+     * @var string
+     */
+    protected $_remoteHost = '';
+
+    /**
+     * worker监听的端口
+     * @var int
+     */
+    protected $_remotePort = 0;
+
+    protected $_reconnectTimer;
+
     protected $swClient;
-    protected $setting = [];
+
+    public $onConnect = null;
 
     /**
      * @var \SplQueue
      */
     protected $_tmp_data;
 
-    public function __construct(string $remote_address, $context_option = null)
-    {
-        $address_info = parse_url($remote_address);
-        if (!$address_info) {
-            list($scheme, $this->_remoteAddress) = explode(':', $remote_address, 2);
-            if (!$this->_remoteAddress) {
-                echo new \Exception('bad remote_address');
-            }
-        } else {
-            if (!isset($address_info['port'])) {
-                $address_info['port'] = 80;
-            }
-            if (!isset($address_info['path'])) {
-                $address_info['path'] = '/';
-            }
-            if (!isset($address_info['query'])) {
-                $address_info['query'] = '';
-            } else {
-                $address_info['query'] = '?' . $address_info['query'];
-            }
-            $this->_remoteAddress = "{$address_info['host']}:{$address_info['port']}";
-            $this->_remoteHost    = $address_info['host'];
-            $this->_remotePort    = $address_info['port'];
-            $this->_remoteURI     = "{$address_info['path']}{$address_info['query']}";
-            $scheme               = isset($address_info['scheme']) ? $address_info['scheme'] : 'tcp';
-        }
 
-        $this->id             = self::$_idRecorder++;
-        // Check application layer protocol class.
-        if (!isset(self::$_builtinTransports[$scheme])) {
-            $scheme         = ucfirst($scheme);
-            $this->protocol = '\\Protocols\\' . $scheme;
-            if (!class_exists($this->protocol)) {
-                $this->protocol = "\\SwooleMan\\Protocols\\$scheme";
+    public function __construct($remote_address, $context_option = null)
+    {
+        self::$statistics['connection_count']++;
+        $this->_socketName = $remote_address;
+        $this->_context = $context_option;
+        $this->_paramSocketName($this->_socketName);
+        $this->_createSetting();
+        $this->_tmp_data = new \SplQueue();
+        $this->_newClient();
+    }
+
+    /**
+     * 解析协议
+     * @param $_socketName
+     * @return bool
+     * @throws \Exception
+     */
+    protected function _paramSocketName($_socketName)
+    {
+        if (!$this->_socketName) {
+            return false;
+        }
+        list($scheme, $address) = explode(':', $_socketName, 2);
+        if (isset(self::$_builtinTransports[$scheme])){
+            $this->transport = $scheme;
+        }else{
+            if(class_exists($scheme)){
+                $this->protocol = $scheme;
+            }else{
+                $scheme         = ucfirst($scheme);
+                $this->protocol = '\\Protocols\\' . $scheme;
                 if (!class_exists($this->protocol)) {
-                    throw new \Exception("class \\Protocols\\$scheme not exist");
+                    $this->protocol = "\\SwooleMan\\Protocols\\$scheme";
+                    if (!class_exists($this->protocol)) {
+                        throw new \Exception("class \\Protocols\\$scheme not exist");
+                    }
                 }
             }
-        } else {
-            $this->transport = self::$_builtinTransports[$scheme];
-        }
-
-        // For statistics.
-        self::$statistics['connection_count']++;
-        $this->newSwClient();
-        $this->_tmp_data = new \SplQueue();
-    }
-
-    protected function formatSetting($context_option)
-    {
-        if (isset($context_option['socket'])){
-            $socket = $context_option['socket'];
-            if (isset($socket['bindto'])){
-                $bindto = 'bindto';
-                list($ip,$port) = explode(":",$bindto,2);
-                $this->setting['bind_address'] = $ip;
-                $this->setting['bind_port'] = $port;
+            if (!isset(self::$_builtinTransports[$this->transport])) {
+                throw new \Exception('Bad worker->transport ' . var_export($this->transport, true));
             }
         }
-        if (isset($context_option['ssl'])){
-            $ssl = $context_option['ssl'];
-            if (isset($ssl['local_cert'])){
-                $this->setting['ssl_cert_file'] = $ssl['local_cert'];
-            }
+
+        if (stripos($address,":") === false){
+            $this->_remoteHost = "/".trim($address,"/");
+            $this->_remotePort = 0;
+        }else{
+            list($this->_remoteHost,$this->_remotePort) = explode(":",trim($address,"//"),2);
         }
+        return true;
     }
 
-    protected function newSwClient()
+    protected function _createSetting()
     {
 
-        switch ($this->transport){
-            case 'tcp':
-                $this->swClient = new \swoole_client(SWOOLE_SOCK_TCP , SWOOLE_SOCK_ASYNC);
-                $this->swClient->on("Receive",array($this,'swOnReceive'));
-                $this->swClient->on("Connect",array($this,'swOnConnect'));
-                break;
-            case 'ws':
-                $this->swClient = new \swoole_http_client($this->getRemoteIp(),$this->getRemotePort());
-                $this->swClient->on("Message",array($this,'swOnMessage'));
-                break;
-//            case "ssl":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP , SWOOLE_ASYNC | SWOOLE_SSL);
-//                break;
-//            case "sslv2":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP , SWOOLE_ASYNC | SWOOLE_SSLv23_CLIENT_METHOD);
-//                break;
-//            case "sslv3":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP , SWOOLE_ASYNC | SWOOLE_SSLv3_CLIENT_METHOD);
-//                break;
-//            case "tls":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP , SWOOLE_ASYNC | SWOOLE_SSL);
-//                break;
-//            case "unix":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP | SWOOLE_ASYNC);
-//                break;
-//            case "udp":
-//                $this->swClient = new swoole_client(SWOOLE_SOCK_TCP | SWOOLE_ASYNC | SWOOLE_SSL);
-//                break;
-        }
-        if (!empty($this->setting)){
-            $this->swClient->set($this->setting);
-        }
-        $this->swClient->on("Error",array($this,'swOnError'));
-        $this->swClient->on("Close",array($this,'swOnClose'));
     }
 
-
-    public function swOnConnect($client)
+    public function _onConnect($client)
     {
+        // Try to emit onConnect callback.
         if ($this->onConnect) {
             try {
                 call_user_func($this->onConnect, $this);
-            } catch (\Exception $e) {
-                Worker::log($e);
-                exit(250);
-            } catch (\Error $e) {
-                Worker::log($e);
-                exit(250);
-            }
-        }
-        // Try to emit protocol::onConnect
-        if (method_exists($this->protocol, 'onConnect')) {
-            try {
-                call_user_func(array($this->protocol, 'onConnect'), $this);
             } catch (\Exception $e) {
                 Worker::log($e);
                 exit(250);
@@ -226,42 +171,14 @@ class AsyncTcpConnection    extends ConnectionInterface
             }
         }
     }
-
-    public function swOnError( $client)
-    {
-        $code = $client->errCode;
-        $msg = socket_strerror($client->errCode);
-        if ($client->errCode == 61){
-            $code = SWOOLEMAN_CONNECT_FAIL;
-            $msg = 'connect ' . $this->_remoteAddress . ' fail after ' . round(microtime(true) -
-                    $this->_connectStartTime, 4) . ' seconds';
-            $this->_status = self::STATUS_CLOSING;
-        }
-        if ($this->onError) {
-            try {
-                call_user_func($this->onError, $this, $code, $msg);
-            } catch (\Exception $e) {
-                Worker::log($e);
-                exit(250);
-            } catch (\Error $e) {
-                Worker::log($e);
-                exit(250);
-            }
-        }
-        if ($this->_status === self::STATUS_CLOSING) {
-            $this->destroy();
-        }
-        if ($this->_status === self::STATUS_CLOSED) {
-            $this->onConnect = null;
-        }
-    }
-
-    public function swOnReceive(\swoole_client $client,$data)
+    public function _onReceive($client,$data)
     {
         if ($this->protocol) {
             $parser = $this->protocol;
             $data = $parser::decode($data, $this);
         }
+        ConnectionInterface::$statistics['total_request']++;
+        // Try to emit onConnect callback.
         if ($this->onMessage) {
             try {
                 call_user_func($this->onMessage, $this,$data);
@@ -275,11 +192,17 @@ class AsyncTcpConnection    extends ConnectionInterface
         }
     }
 
-    public function swOnMessage($client,$frame)
+    public function _OnError($client)
     {
-        if ($this->onMessage) {
+        $code = $client->errCode;
+        $msg = socket_strerror($client->errCode);
+        if ($client->errCode == 61){
+            $code = SWOOLEMAN_CONNECT_FAIL;
+            $msg = 'connect ' . "{$this->_remoteHost}:{$this->_remotePort}" . ' fail ';
+        }
+        if ($this->onError) {
             try {
-                call_user_func($this->onMessage, $this,$frame->data);
+                call_user_func($this->onError, $this, $code, $msg);
             } catch (\Exception $e) {
                 Worker::log($e);
                 exit(250);
@@ -290,7 +213,7 @@ class AsyncTcpConnection    extends ConnectionInterface
         }
     }
 
-    public function swOnClose(\swoole_client $client)
+    public function _OnClose( $client)
     {
         if ($this->onClose) {
             try {
@@ -305,6 +228,47 @@ class AsyncTcpConnection    extends ConnectionInterface
         }
     }
 
+    protected function _newTcpClient()
+    {
+        $swClient = new \swoole_client(SWOOLE_SOCK_TCP , SWOOLE_SOCK_ASYNC);
+        $swClient->on("Receive",array($this,'_OnReceive'));
+        $swClient->on("Connect",array($this,'_OnConnect'));
+        $swClient->on("Error",array($this,'_OnError'));
+        $swClient->on("Close",array($this,'_OnClose'));
+        if (!empty($this->setting)){
+            $swClient->set($this->setting);
+        }
+        return $swClient;
+    }
+
+    /**
+     * 创建服务
+     */
+    protected function _newClient()
+    {
+        switch (strtolower($this->transport)){
+            case "tcp":
+                $this->swClient = $this->_newTcpClient();
+                break;
+            case "udp":
+                $this->swClient = $this->_newUdpServer();
+                break;
+            case "unix":
+                $this->swClient = $this->_newUnixServer();
+                break;
+            case "http":
+                $this->swClient = $this->_newHttpServer();
+                break;
+            case "websocket":
+                $this->swClient = $this->_newWebSocketServer();
+                break;
+        }
+    }
+
+    /**
+     * 连接
+     * @return bool|mixed
+     */
     public function connect()
     {
         //websocket协议
@@ -315,10 +279,13 @@ class AsyncTcpConnection    extends ConnectionInterface
         if ($this->swClient->isConnected()){
             return true;
         }
-        $this->_connectStartTime = microtime(true);
         return $this->swClient->connect($this->_remoteHost,$this->_remotePort);
     }
 
+    /**
+     * 重连
+     * @param int $after
+     */
     public function reConnect($after = 0) {
         if ($this->_reconnectTimer) {
             Timer::del($this->_reconnectTimer);
@@ -334,7 +301,6 @@ class AsyncTcpConnection    extends ConnectionInterface
      * Sends data on the connection.
      *
      * @param string $send_buffer
-     * @param bool $raw
      * @return boolean
      */
     public function send($send_buffer,$raw = false)
@@ -343,7 +309,6 @@ class AsyncTcpConnection    extends ConnectionInterface
             $this->_tmp_data->push(["data"=>$send_buffer,'raw'=>$raw]);
             return false;
         }
-        // Try to call protocol::encode($send_buffer) before sending.
         if (false === $raw && $this->protocol) {
             $parser      = $this->protocol;
             $send_buffer = $parser::encode($send_buffer, $this);
@@ -385,11 +350,6 @@ class AsyncTcpConnection    extends ConnectionInterface
         return $this->_remoteHost;
     }
 
-    public function getRemoteHost()
-    {
-        return $this->_remoteHost;
-    }
-
     /**
      * Get remote port.
      *
@@ -400,11 +360,6 @@ class AsyncTcpConnection    extends ConnectionInterface
         return $this->_remotePort;
     }
 
-    public function getRemoteURI()
-    {
-        return $this->_remoteURI;
-    }
-
     /**
      * Close connection.
      *
@@ -413,50 +368,15 @@ class AsyncTcpConnection    extends ConnectionInterface
      */
     public function close($data = null)
     {
+        $this->send($data);
         $this->swClient->close();
     }
 
-    /**
-     * Destroy connection.
-     *
-     * @return void
-     */
     public function destroy()
     {
-        // Avoid repeated calls.
-        if ($this->_status === self::STATUS_CLOSED) {
-            return;
-        }
-        $this->_status = self::STATUS_CLOSED;
-        // Try to emit onClose callback.
-        if ($this->onClose) {
-            try {
-                call_user_func($this->onClose, $this);
-            } catch (\Exception $e) {
-                Worker::log($e);
-                exit(250);
-            } catch (\Error $e) {
-                Worker::log($e);
-                exit(250);
-            }
-        }
-        // Try to emit protocol::onClose
-        if (method_exists($this->protocol, 'onClose')) {
-            try {
-                call_user_func(array($this->protocol, 'onClose'), $this);
-            } catch (\Exception $e) {
-                Worker::log($e);
-                exit(250);
-            } catch (\Error $e) {
-                Worker::log($e);
-                exit(250);
-            }
-        }
-        if ($this->_status === self::STATUS_CLOSED) {
-            // Cleaning up the callback to avoid memory leaks.
-            $this->onMessage = $this->onClose = $this->onError = $this->onBufferFull = $this->onBufferDrain = null;
-        }
+
     }
+
 
     public function __destruct()
     {
