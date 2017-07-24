@@ -7,6 +7,7 @@
  */
 
 namespace SwooleMan;
+require_once __DIR__ . '/Lib/Constants.php';
 
 use Swoole;
 use SwooleMan\Connection\ConnectionInterface;
@@ -270,9 +271,11 @@ class Worker
         $this->_context = $context;
         $this->_init();
         $this->_paramSocketName($this->_socketName);
-        $this->_createSetting();
-        $this->_newService();
-
+        if (!self::$_instance){
+            $this->_createSetting();
+            $this->_newService();
+            self::$_instance = $this;
+        }
     }
 
     /**
@@ -282,7 +285,7 @@ class Worker
     {
         self::_checkSapiEnv();
         self::_parseCommand();
-        self::_run();
+        self::$_instance->run();
     }
 
     /**
@@ -307,21 +310,31 @@ class Worker
     }
 
     /**
-     * 监听
+     * 监听端口
+     * @throws Swoole\Exception
      */
-    public  function listen()
+    public function listen()
     {
         switch (strtolower($this->transport)){
+            case "tcp":
+                $port = self::$_swServer->listen($this->_host,$this->_port,SWOOLE_SOCK_TCP);
+                $this->_onTcpCallBack($port,true);
+                $port->set([
+                        'open_eof_split' => true,
+                        'package_eof' => "\r\n",
+                ]);
+                break;
             case "udp":
-                $flag = SWOOLE_SOCK_UDP;
+                $port = self::$_swServer->listen($this->_host,$this->_port,SWOOLE_SOCK_UDP);
+                $this->_onUdpCallBack($port,true);
                 break;
             case "unix":
-                $flag = SWOOLE_UNIX_DGRAM;
+                $port = self::$_swServer->listen($this->_host,$this->_port,SWOOLE_SOCK_UNIX_STREAM);
+                $this->_onUnixCallBack($port,true);
                 break;
             default:
-                $flag = SWOOLE_SOCK_TCP;
+                throw new Swoole\Exception("不支持该协议");
         }
-        self::$_swServer->listen($this->_host,$this->_port,$flag);
     }
 
 
@@ -337,6 +350,7 @@ class Worker
             return false;
         }
         list($scheme, $address) = explode(':', $_socketName, 2);
+        $scheme = strtolower($scheme);
         if (isset(self::$_builtinTransports[$scheme])){
             $this->transport = $scheme;
         }else{
@@ -508,7 +522,6 @@ class Worker
         if (!isset($this->connections[$fd])){
             return;
         }
-
         $connection = $this->connections[$fd];
         if ($connection->protocol) {
             $parser = $connection->protocol;
@@ -650,7 +663,7 @@ class Worker
      */
     public function _onWorkerError($server,$worker_id, $worker_pid, $exit_code, $signal)
     {
-
+        var_dump("_onWorkerError");
     }
 
     /**
@@ -682,6 +695,7 @@ class Worker
      */
     public function _onOpen($server, $req)
     {
+        var_dump("_onOpen");
         $fd = $req->fd;
         $connection                         = new TcpConnection($server, $fd);
         $this->connections[$fd] = $connection;
@@ -741,20 +755,32 @@ class Worker
     protected function _newTcpServer()
     {
         $server = new Swoole\Server($this->_host,$this->_port,SWOOLE_BASE,SWOOLE_SOCK_TCP);
-        $server->on("Start",[$this,"_onStart"]);
-        $server->on("Shutdown",[$this,"_onShutdown"]);
-        $server->on("WorkerStart",[$this,"_onWorkerStart"]);
-        $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+        $this->_onTcpCallBack($server);
+        if (!empty($this->_setting)){
+            $server->set($this->_setting);
+        }
+        return $server;
+    }
+
+    /**
+     * 设置回调方法
+     * @param Swoole\Server $server
+     * @param $listen
+     */
+    protected function _onTcpCallBack($server,$listen = false)
+    {
+        if (!$listen){
+            $server->on("Start",[$this,"_onStart"]);
+            $server->on("Shutdown",[$this,"_onShutdown"]);
+            $server->on("WorkerStart",[$this,"_onWorkerStart"]);
+            $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+            $server->on("WorkerError",[$this,"_onWorkerError"]);
+        }
         $server->on("Connect",[$this,"_onConnect"]);
         $server->on("Receive",[$this,"_onReceive"]);
         $server->on("Close",[$this,"_onClose"]);
         $server->on("BufferFull",[$this,"_onBufferFull"]);
         $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
-        $server->on("WorkerError",[$this,"_onWorkerError"]);
-        if (!empty($this->_setting)){
-            $server->set($this->_setting);
-        }
-        return $server;
     }
 
     /**
@@ -764,18 +790,31 @@ class Worker
     protected function _newUdpServer()
     {
         $server = new Swoole\Server($this->_host,$this->_port,SWOOLE_BASE,SWOOLE_SOCK_UDP);
-        $server->on("Start",[$this,"_onStart"]);
-        $server->on("Shutdown",[$this,"_onShutdown"]);
-        $server->on("WorkerStart",[$this,"_onWorkerStart"]);
-        $server->on("WorkerStop",[$this,"_onWorkerStop"]);
-        $server->on("Packet",[$this,"_onPacket"]);
-        $server->on("BufferFull",[$this,"_onBufferFull"]);
-        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
-        $server->on("WorkerError",[$this,"_onWorkerError"]);
+        $this->_onUdpCallBack($server);
         if (!empty($this->_setting)){
             $server->set($this->_setting);
         }
         return $server;
+    }
+
+    /**
+     * 设置回调方法
+     * @param Swoole\Server $server
+     * @param $listen
+     */
+    protected function _onUdpCallBack($server,$listen = false)
+    {
+        if (!$listen){
+            $server->on("Start",[$this,"_onStart"]);
+            $server->on("Shutdown",[$this,"_onShutdown"]);
+            $server->on("WorkerStart",[$this,"_onWorkerStart"]);
+            $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+            $server->on("WorkerError",[$this,"_onWorkerError"]);
+        }
+        $server->on("Packet",[$this,"_onPacket"]);
+        $server->on("BufferFull",[$this,"_onBufferFull"]);
+        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
+
     }
 
     /**
@@ -785,20 +824,33 @@ class Worker
     protected function _newUnixServer()
     {
         $server = new Swoole\Server($this->_host,$this->_port,SWOOLE_BASE,SWOOLE_UNIX_STREAM);
-        $server->on("Start",[$this,"_onStart"]);
-        $server->on("Shutdown",[$this,"_onShutdown"]);
-        $server->on("WorkerStart",[$this,"_onWorkerStart"]);
-        $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+        $this->_onUnixCallBack($server);
+        if (!empty($this->_setting)){
+            $server->set($this->_setting);
+        }
+        return $server;
+    }
+
+    /**
+     * 设置回调方法
+     * @param Swoole\Server $server
+     * @param $listen
+     */
+    protected function _onUnixCallBack($server,$listen = false)
+    {
+        if (!$listen){
+            $server->on("Start",[$this,"_onStart"]);
+            $server->on("Shutdown",[$this,"_onShutdown"]);
+            $server->on("WorkerStart",[$this,"_onWorkerStart"]);
+            $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+            $server->on("WorkerError",[$this,"_onWorkerError"]);
+        }
         $server->on("Connect",[$this,"_onConnect"]);
         $server->on("Receive",[$this,"_onReceive"]);
         $server->on("Close",[$this,"_onClose"]);
         $server->on("BufferFull",[$this,"_onBufferFull"]);
         $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
-        $server->on("WorkerError",[$this,"_onWorkerError"]);
-        if (!empty($this->_setting)){
-            $server->set($this->_setting);
-        }
-        return $server;
+
     }
 
     /**
@@ -808,18 +860,30 @@ class Worker
     protected function _newHttpServer()
     {
         $server = new Swoole\Http\Server($this->_host,$this->_port,SWOOLE_BASE);
-        $server->on("Start",[$this,"_onStart"]);
-        $server->on("Shutdown",[$this,"_onShutdown"]);
-        $server->on("WorkerStart",[$this,"_onWorkerStart"]);
-        $server->on("WorkerStop",[$this,"_onWorkerStop"]);
-        $server->on("Request",[$this,"_onRequest"]);
-        $server->on("BufferFull",[$this,"_onBufferFull"]);
-        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
-        $server->on("WorkerError",[$this,"_onWorkerError"]);
+        $this->_onHttpCallBack($server);
         if (!empty($this->_setting)){
             $server->set($this->_setting);
         }
         return $server;
+    }
+
+    /**
+     * 设置回调方法
+     * @param Swoole\Server $server
+     * @param $listen
+     */
+    protected function _onHttpCallBack($server,$listen = false)
+    {
+        if (!$listen){
+            $server->on("Start",[$this,"_onStart"]);
+            $server->on("Shutdown",[$this,"_onShutdown"]);
+            $server->on("WorkerStart",[$this,"_onWorkerStart"]);
+            $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+            $server->on("WorkerError",[$this,"_onWorkerError"]);
+        }
+        $server->on("Request",[$this,"_onRequest"]);
+        $server->on("BufferFull",[$this,"_onBufferFull"]);
+        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
     }
 
     /**
@@ -829,19 +893,32 @@ class Worker
     protected function _newWebSocketServer()
     {
         $server = new Swoole\WebSocket\Server($this->_host,$this->_port,SWOOLE_BASE);
-        $server->on("Start",[$this,"_onStart"]);
-        $server->on("Shutdown",[$this,"_onShutdown"]);
-        $server->on("WorkerStart",[$this,"_onWorkerStart"]);
-        $server->on("WorkerStop",[$this,"_onWorkerStop"]);
-        $server->on("Open",[$this,"_onOpen"]);
-        $server->on("Message",[$this,"_onMessage"]);
-        $server->on("BufferFull",[$this,"_onBufferFull"]);
-        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
-        $server->on("WorkerError",[$this,"_onWorkerError"]);
+        $this->_onWebSocketCallBack($server);
         if (!empty($this->_setting)){
             $server->set($this->_setting);
         }
         return $server;
+    }
+
+    /**
+     * 设置回调方法
+     * @param Swoole\Server $server
+     * @param $listen
+     */
+    protected function _onWebSocketCallBack($server,$listen = false)
+    {
+        if (!$listen){
+            $server->on("Start",[$this,"_onStart"]);
+            $server->on("Shutdown",[$this,"_onShutdown"]);
+            $server->on("WorkerStart",[$this,"_onWorkerStart"]);
+            $server->on("WorkerStop",[$this,"_onWorkerStop"]);
+            $server->on("WorkerError",[$this,"_onWorkerError"]);
+        }
+        $server->on("Open",[$this,"_onOpen"]);
+        $server->on("Message",[$this,"_onMessage"]);
+        $server->on("BufferFull",[$this,"_onBufferFull"]);
+        $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
+
     }
 
     /**
@@ -1049,7 +1126,7 @@ class Worker
     /**
      * 开始启动服务
      */
-    protected static function _run()
+    protected function run()
     {
         self::$_swServer->start();
     }

@@ -12,7 +12,7 @@ $worker->count = 1;
 // worker进程启动后创建一个text Worker以便打开一个内部通讯端口
 $worker->onWorkerStart = function($worker)
 {
-
+    var_dump("onWorkerStart");
 };
 // 新增加一个属性，用来保存uid到connection的映射
 $worker->uidConnections = array();
@@ -67,21 +67,20 @@ function sendMessageByUid($uid, $message)
     return false;
 }
 
-
 // 开启一个内部端口，方便内部系统推送数据，Text协议格式 文本+换行符
-//$inner_text_worker = new Worker('text://0.0.0.0:5678');
-//$inner_text_worker->onMessage = function($connection, $buffer)
-//{
-//    // $data数组格式，里面有uid，表示向那个uid的页面推送数据
-//    $data = json_decode($buffer, true);
-//    $uid = $data['uid'];
-//    // 通过workerman，向uid的页面推送数据
-//    $ret = sendMessageByUid($uid, $buffer);
-//    // 返回推送结果
-//    $connection->send($ret ? 'ok' : 'fail');
-//};
-//// ## 执行监听 ##
-//$inner_text_worker->listen();
+$inner_text_worker = new Worker('text://0.0.0.0:5678');
+$inner_text_worker->onMessage = function($connection, $buffer)
+{
+    // 通过workerman，向uid的页面推送数据
+    $ret = sendMessageByUid("uid1", $buffer);
+    // 返回推送结果
+    $connection->send($ret ? 'ok' : 'fail');
+};
+$inner_text_worker->onConnect = function ($connection){
+  var_dump("onConnect");
+};
+// ## 执行监听 ##
+$inner_text_worker->listen();
 
 // 运行所有的worker
 Worker::runAll();

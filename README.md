@@ -26,3 +26,8 @@ $proxy->onMessage = function ($connection, $buffer){
 $proxy::runAll();
 
 ```
+
+### 注意事项
+1.SwooleMan 不支持在同一个文件中实例化多个Worker.参考workerman的Windows版本 [链接](http://doc3.workerman.net/worker-development/run-all.html)
+
+2.使用listen 方法,不能在onWorkerStart中调用,请正常new一个woker实例,在调用listen方法.
