@@ -51,11 +51,20 @@ class TcpConnection extends ConnectionInterface
     public $onBufferDrain = null;
 
 
+    public static $defaultMaxSendBufferSize;
+
+    /**
+     * client 的连接fd
+     * @var int
+     */
+    protected $_fd;
+
+
 
     public function __construct($swServer,$fd)
     {
         self::$statistics['connection_count']++;
-        $this->id      = $fd;
+        $this->id      = $this->_fd = $fd;
         $this->swServer = $swServer;
     }
 
@@ -74,10 +83,11 @@ class TcpConnection extends ConnectionInterface
                 return null;
             }
         }
-        if ($this->transport == "websocket"){
-            $ret = $this->swServer->push($this->id,$send_buffer);
+
+        if (strtolower($this->transport) == "websocket"){
+            $ret = $this->swServer->push($this->_fd,$send_buffer);
         }else{
-            $ret = $this->swServer->send($this->id,$send_buffer);
+            $ret = $this->swServer->send($this->_fd,$send_buffer);
         }
         if ($ret === false){
             self::$statistics['send_fail']++;
@@ -103,7 +113,7 @@ class TcpConnection extends ConnectionInterface
      */
     public function getRemoteIp()
     {
-        $info = $this->swServer->connection_info($this->id);
+        $info = $this->swServer->connection_info($this->_fd);
         return $info['remote_ip'];
     }
 
@@ -114,7 +124,7 @@ class TcpConnection extends ConnectionInterface
      */
     public function getRemotePort()
     {
-        $info = $this->swServer->connection_info($this->id);
+        $info = $this->swServer->connection_info($this->_fd);
         return $info['remote_port'];
     }
 
@@ -127,7 +137,7 @@ class TcpConnection extends ConnectionInterface
     public function close($data = null)
     {
         $this->send($data);
-        $this->swServer->close($this->id);
+        $this->swServer->close($this->_fd);
     }
 
     public function destroy()
@@ -137,12 +147,12 @@ class TcpConnection extends ConnectionInterface
 
     public function pauseRecv()
     {
-        $this->swServer->pause($this->id);
+        $this->swServer->pause($this->_fd);
     }
 
     public function resumeRecv()
     {
-        $this->swServer->resume($this->id);
+        $this->swServer->resume($this->_fd);
     }
 
     public function pipe(TcpConnection $dest)

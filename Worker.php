@@ -13,6 +13,7 @@ use Swoole;
 use SwooleMan\Connection\ConnectionInterface;
 use SwooleMan\Connection\TcpConnection;
 use SwooleMan\Connection\UdpConnection;
+use SwooleMan\Events\SwEvent;
 
 class Worker
 {
@@ -186,7 +187,7 @@ class Worker
      * worker 监听的ip
      * @var string
      */
-    protected $_host = '';
+    protected $_host = '127.0.0.1';
 
     /**
      * worker监听的端口
@@ -265,14 +266,16 @@ class Worker
 
 
 
-    public function __construct($listen,$context = '')
+    public function __construct($listen = '',$context = [])
     {
         $this->_socketName = $listen;
         $this->_context = $context;
         $this->_init();
         $this->_paramSocketName($this->_socketName);
+        $this->_createSetting();
+        self::_checkSapiEnv();
+        self::_parseCommand();
         if (!self::$_instance){
-            $this->_createSetting();
             $this->_newService();
             self::$_instance = $this;
         }
@@ -283,8 +286,6 @@ class Worker
      */
     public static function runAll()
     {
-        self::_checkSapiEnv();
-        self::_parseCommand();
         self::$_instance->run();
     }
 
@@ -320,8 +321,7 @@ class Worker
                 $port = self::$_swServer->listen($this->_host,$this->_port,SWOOLE_SOCK_TCP);
                 $this->_onTcpCallBack($port,true);
                 $port->set([
-                        'open_eof_split' => true,
-                        'package_eof' => "\r\n",
+                        'open_length_check' => true
                 ]);
                 break;
             case "udp":
@@ -695,10 +695,9 @@ class Worker
      */
     public function _onOpen($server, $req)
     {
-        var_dump("_onOpen");
         $fd = $req->fd;
         $connection                         = new TcpConnection($server, $fd);
-        $this->connections[$fd] = $connection;
+        $this->connections[$fd]             = $connection;
         $connection->worker                 = $this;
         $connection->protocol               = $this->protocol;
         $connection->transport              = $this->transport;
@@ -916,6 +915,7 @@ class Worker
         }
         $server->on("Open",[$this,"_onOpen"]);
         $server->on("Message",[$this,"_onMessage"]);
+        $server->on("Close",[$this,"_onClose"]);
         $server->on("BufferFull",[$this,"_onBufferFull"]);
         $server->on("BufferEmpty",[$this,"_onBufferEmpty"]);
 
@@ -1027,7 +1027,6 @@ class Worker
      */
     protected static function _parseCommand()
     {
-
         global $argv;
         // Check argv;
         $start_file = $argv[0];
@@ -1063,7 +1062,6 @@ class Worker
             self::log("SwooleMan[$start_file] not run");
             exit;
         }
-
         // execute command.
         switch ($command) {
             case 'start':
@@ -1071,17 +1069,6 @@ class Worker
                     Worker::$daemonize = true;
                 }
                 break;
-            case 'status':
-//                if (is_file(self::$_statisticsFile)) {
-//                    @unlink(self::$_statisticsFile);
-//                }
-//                // Master process will send status signal to all child processes.
-//                posix_kill($master_pid, SIGUSR2);
-//                // Waiting amoment.
-//                usleep(500000);
-//                // Display statisitcs data from a disk file.
-//                @readfile(self::$_statisticsFile);
-                exit(0);
             case 'stop':
                 self::log("SwooleMan[$start_file] is stoping ...");
                 // Send stop signal to master process.
@@ -1128,6 +1115,7 @@ class Worker
      */
     protected function run()
     {
+        self::$globalEvent = new SwEvent();
         self::$_swServer->start();
     }
 

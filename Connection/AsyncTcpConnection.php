@@ -309,6 +309,7 @@ class AsyncTcpConnection extends ConnectionInterface
             $this->_tmp_data->push(["data"=>$send_buffer,'raw'=>$raw]);
             return false;
         }
+
         if (false === $raw && $this->protocol) {
             $parser      = $this->protocol;
             $send_buffer = $parser::encode($send_buffer, $this);
