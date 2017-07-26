@@ -241,6 +241,61 @@ class AsyncTcpConnection extends ConnectionInterface
         return $swClient;
     }
 
+    public function _OnMessage($client,$frame)
+    {
+        ConnectionInterface::$statistics['total_request']++;
+        // Try to emit onConnect callback.
+        if ($this->onMessage) {
+            try {
+                call_user_func($this->onMessage, $this,$frame->data);
+            } catch (\Exception $e) {
+                Worker::log($e);
+                exit(250);
+            } catch (\Error $e) {
+                Worker::log($e);
+                exit(250);
+            }
+        }
+    }
+
+
+    protected function _newUdpClient()
+    {
+        $swClient = new \swoole_client(SWOOLE_SOCK_UDP , SWOOLE_SOCK_ASYNC);
+        $swClient->on("Receive",array($this,'_OnReceive'));
+        $swClient->on("Connect",array($this,'_OnConnect'));
+        $swClient->on("Error",array($this,'_OnError'));
+        $swClient->on("Close",array($this,'_OnClose'));
+        if (!empty($this->setting)){
+            $swClient->set($this->setting);
+        }
+        return $swClient;
+    }
+
+    protected function _newUnixClient()
+    {
+        $swClient = new \swoole_client(SWOOLE_SOCK_UNIX_DGRAM , SWOOLE_SOCK_ASYNC);
+        $swClient->on("Receive",array($this,'_OnReceive'));
+        $swClient->on("Connect",array($this,'_OnConnect'));
+        $swClient->on("Error",array($this,'_OnError'));
+        $swClient->on("Close",array($this,'_OnClose'));
+        if (!empty($this->setting)){
+            $swClient->set($this->setting);
+        }
+        return $swClient;
+    }
+
+    protected function _newWsClient()
+    {
+        $swClient = new \swoole_http_client($this->_remoteHost , $this->_remotePort);
+        $swClient->on("Message",array($this,'_OnMessage'));
+        if (!empty($this->setting)){
+            $swClient->set($this->setting);
+        }
+        return $swClient;
+    }
+
+
     /**
      * 创建服务
      */
@@ -251,16 +306,13 @@ class AsyncTcpConnection extends ConnectionInterface
                 $this->swClient = $this->_newTcpClient();
                 break;
             case "udp":
-                $this->swClient = $this->_newUdpServer();
+                $this->swClient = $this->_newUdpClient();
                 break;
             case "unix":
-                $this->swClient = $this->_newUnixServer();
+                $this->swClient = $this->_newUnixClient();
                 break;
-            case "http":
-                $this->swClient = $this->_newHttpServer();
-                break;
-            case "websocket":
-                $this->swClient = $this->_newWebSocketServer();
+            case "ws":
+                $this->swClient = $this->_newWsClient();
                 break;
         }
     }
@@ -273,7 +325,7 @@ class AsyncTcpConnection extends ConnectionInterface
     {
         //websocket协议
         if ($this->transport == "ws"){
-            return $this->swClient->upgrade('/', array($this,'swOnConnect'));
+            return $this->swClient->upgrade('/', array($this,'_onConnect'));
         }
 
         if ($this->swClient->isConnected()){
